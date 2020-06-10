@@ -9,6 +9,42 @@ from ctgan.sampler import Sampler
 from ctgan.transformer import DataTransformer
 
 
+class EarlyStopping:
+    """Early stops the training if validation loss doesn't improve after a given patience."""
+
+    def __init__(self, patience=7, verbose=False, delta=0):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement.
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+        self.delta = delta
+
+    def __call__(self, val_loss):
+
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            #print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+
 class CTGANSynthesizer(object):
     """Conditional Table GAN Synthesizer.
 
@@ -97,7 +133,6 @@ class CTGANSynthesizer(object):
 
     def fit(self, train_data, discrete_columns=tuple(), epochs=300, log_frequency=True):
         """Fit the CTGAN Synthesizer models to the training data.
-
         Args:
             train_data (numpy.ndarray or pandas.DataFrame):
                 Training Data. It must be a 2-dimensional numpy array or a
@@ -148,6 +183,9 @@ class CTGANSynthesizer(object):
         mean = torch.zeros(self.batch_size, self.embedding_dim, device=self.device)
         std = mean + 1
 
+        train_losses = []
+        early_stopping = EarlyStopping(patience=self.patience, verbose=False)
+
         steps_per_epoch = max(len(train_data) // self.batch_size, 1)
         for i in range(epochs):
             for id_ in range(steps_per_epoch):
@@ -185,7 +223,7 @@ class CTGANSynthesizer(object):
 
                 pen = discriminator.calc_gradient_penalty(real_cat, fake_cat, self.device)
                 loss_d = -(torch.mean(y_real) - torch.mean(y_fake))
-
+                train_losses.append(loss_d.item())
                 optimizerD.zero_grad()
                 pen.backward(retain_graph=True)
                 loss_d.backward()
@@ -216,15 +254,20 @@ class CTGANSynthesizer(object):
                     cross_entropy = self._cond_loss(fake, c1, m1)
 
                 loss_g = -torch.mean(y_fake) + cross_entropy
-
+                train_losses.append(loss_g.item())
                 optimizerG.zero_grad()
                 loss_g.backward()
                 optimizerG.step()
+            early_stopping(np.average(train_losses))
+            if early_stopping.early_stop:
+                print("GAN: Early stopping after epochs {}".format(i))
+                break
+            train_losses = []
 
-            print("Epoch %d, Loss G: %.4f, Loss D: %.4f" %
-                  (i + 1, loss_g.detach().cpu(), loss_d.detach().cpu()),
-                  flush=True)
-
+            # print("Epoch %d, Loss G: %.4f, Loss D: %.4f" %
+            #       (i + 1, loss_g.detach().cpu(), loss_d.detach().cpu()),
+            #       flush=True)
+            
     def sample(self, n):
         """Sample data similar to the training data.
 
